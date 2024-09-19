@@ -1,0 +1,10 @@
+services:
+  python:
+    image: pr01/python:3.11
+    build: ./python
+    container_name: 'pr01-python'
+    stdin_open: true
+    tty: true
+    working_dir: '/tmp/work'
+    volumes:
+      - ../python:/tmp/work

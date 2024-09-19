@@ -1,0 +1,221 @@
+#%%
+print('test')
+# %% ライブラリ読み込み
+import numpy as np
+import pandas as pd
+import os
+import pickle
+import gc
+from IPython.display import display
+
+
+#可視化
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+#前処理
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder, OneHotEncoder
+
+#モデリング
+from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
+from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
+import lightgbm as lgb
+
+import warnings
+warnings.filterwarnings('ignore')
+
+import japanize_matplotlib 
+
+sns.set(font='IPAexGothic') 
+# %%
+file_path = '/tmp/work/input/'
+
+#ファイルの読み込み
+df_train = pd.read_csv(file_path + 'train.csv')
+df_train.head()
+# %% データの確認（簡易）
+print(df_train.shape)
+print('レコード数：',len(df_train))
+print('カラム数：',len(df_train.columns))
+
+
+# %%
+df_train.info()
+# %%
+df_train['Pclass'] =df_train['Pclass'].astype(object)
+df_train[['Pclass']].info()
+# %%
+df_train['Pclass'] = df_train['Pclass'].astype(np.int64)
+df_train[['Pclass']].info()
+
+# %%
+df_train.isna().sum()
+# %% データセット 説明変数と目的変数
+x_train, y_train, id_train = df_train[['Pclass','Fare']],\
+df_train[['Survived']],\
+df_train[['PassengerId']]
+
+print(x_train.shape, y_train.shape, id_train.shape)
+
+
+# %% バリデーション
+#ホールドアウト
+df_train[['Survived']].value_counts()/ len(df_train[['Survived']])
+
+x_tr, x_va, y_tr, y_va = train_test_split(x_train,
+                                          y_train,
+                                          test_size=0.2,
+                                          shuffle=True,
+                                          stratify=y_train,
+                                          random_state=123
+)
+
+print(x_tr.shape, y_tr.shape)
+print(x_va.shape, y_va.shape)
+print(f"y_train:{y_train['Survived'].mean():.3f}, y_tr:{y_tr['Survived'].mean():.3f}, y_va:{y_va['Survived'].mean():.3f}")
+
+# %% バリデーション２ クロスバリデーション
+n_splits = 5
+cv =list(StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=123).split(x_train, y_train))
+
+
+for nfold in np.arange(n_splits):
+  print('-'*20, nfold, '-'*20)
+  idx_tr, idx_va = cv[nfold][0], cv[nfold][1] 
+  x_tr, y_tr = x_train.loc[idx_tr, :], y_train.loc[idx_tr, :]
+  x_va, y_va = x_train.loc[idx_va, :], y_train.loc[idx_va, :]
+  print(x_tr.shape, y_tr.shape)
+  print(x_va.shape, y_va.shape)
+  print(f"y_train:{y_train['Survived'].mean():.3f}, y_tr:{y_tr['Survived'].mean():.3f}, y_va:{y_va['Survived'].mean():.3f}")
+  #本来はここでモデル学習
+
+
+# %% モデル学習
+#ホールドアウト検証の場合
+x_tr, x_va, y_tr, y_va = train_test_split(x_train,
+                                          y_train,
+                                          test_size=0.2,
+                                          shuffle=True,
+                                          stratify=y_train,
+                                          random_state=123
+)
+
+print(x_tr.shape, y_tr.shape)
+print(x_va.shape, y_va.shape)
+print(f"y_train:{y_train['Survived'].mean():.3f}, y_tr:{y_tr['Survived'].mean():.3f}, y_va:{y_va['Survived'].mean():.3f}")
+
+#ハイパーパラメータ
+params = {
+  'boosting_type': 'gbdt',
+  'objective': 'binary',
+  'metric': 'auc',
+  'learning_rate': 0.1,
+  'num_leaves': 16,
+  'n_estimators': 100000,
+  'random_state': 123,
+  'importance_type': 'gain'
+}
+
+model = lgb.LGBMClassifier(**params)
+model.fit(x_tr,
+          y_tr,
+          eval_set=[(x_tr,y_tr), (x_va,y_va)],
+          callbacks=[
+            lgb.early_stopping(stopping_rounds=100, verbose=True),
+            lgb.log_evaluation(10),
+          ]
+          )
+# %%
+y_tr_pred = model.predict(x_tr)
+y_va_pred = model.predict(x_va)
+metric_tr = accuracy_score(y_tr, y_tr_pred)
+metric_va = accuracy_score(y_va, y_va_pred)
+print(f'[accuracy] tr:{metric_tr:.2f}, va:{metric_va:.2f} ')
+# %%
+
+imp = pd.DataFrame({'col':x_train.columns, 'imp':model.feature_importances_})
+imp.sort_values('imp',ascending=False, ignore_index=True )
+
+
+
+#%% モデル学習 クロスバリデーション
+params = {
+  'boosting_type': 'gbdt',
+  'objective': 'binary',
+  'metric': 'auc',
+  'learning_rate': 0.1,
+  'num_leaves': 16,
+  'n_estimators': 100000,
+  'random_state': 123,
+  'importance_type': 'gain'
+}
+
+metrics = []
+imp = pd.DataFrame()
+
+n_splits = 5
+cv =list(StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=123).split(x_train, y_train))
+
+
+for nfold in np.arange(n_splits):
+  print('-'*20, nfold, '-'*20)
+  idx_tr, idx_va = cv[nfold][0], cv[nfold][1] 
+  x_tr, y_tr = x_train.loc[idx_tr, :], y_train.loc[idx_tr, :]
+  x_va, y_va = x_train.loc[idx_va, :], y_train.loc[idx_va, :]
+  print(x_tr.shape, y_tr.shape)
+  print(x_va.shape, y_va.shape)
+  print(f"y_train:{y_train['Survived'].mean():.3f}, y_tr:{y_tr['Survived'].mean():.3f}, y_va:{y_va['Survived'].mean():.3f}")
+  
+  model = lgb.LGBMClassifier(**params)
+  model.fit(x_tr,
+            y_tr,
+            eval_set=[(x_tr,y_tr), (x_va,y_va)],
+            callbacks=[
+            lgb.early_stopping(stopping_rounds=100, verbose=True),
+            lgb.log_evaluation(100),
+            ]
+            )
+  
+  y_tr_pred = model.predict(x_tr)
+  y_va_pred = model.predict(x_va)
+  metric_tr = accuracy_score(y_tr, y_tr_pred)
+  metric_va = accuracy_score(y_va, y_va_pred)
+  print(f'[accuracy] tr:{metric_tr:.2f}, va:{metric_va:.2f} ')
+  metrics.append([nfold, metric_tr, metric_va])
+
+  _imp = pd.DataFrame({'col':x_train.columns,
+  'imp':model.feature_importances_,
+  'nfold':nfold})
+  imp = pd.concat([imp, _imp], axis=0, ignore_index=True)
+
+
+print('='*20, 'result', '='*20)
+metrics = np.array(metrics)
+print(metrics)
+
+
+print(f"[cv] tr:{metrics[:,1].mean():.2f}+-{metrics[:,1].std():.2f}, va: {metrics[:,2].mean():.2f}+-{metrics[:,2].std():.2f}")
+
+imp = imp.groupby('col')['imp'].agg(['mean','std'])
+imp.columns = ['imp', 'imp_std']
+imp = imp.reset_index(drop=False)
+
+print('Done.')
+# %%
+imp.sort_values('imp', ascending=False, ignore_index=True)
+# %%
+df_test = pd.read_csv(file_path + 'test.csv')
+x_test = df_test[['Pclass', 'Fare']]
+id_test = df_test[['PassengerId']]
+
+# %%
+y_test_pred = model.predict(x_test)
+# %%
+df_submit = pd.DataFrame({'PassengerId': id_test['PassengerId'], 'Survived': y_test_pred})
+
+#from IPython.display import display
+display(df_submit.head(5))
+df_submit.to_csv('submission_baseline2.csv', index=None)
+# %%
+os.getcwd()
+# %%
